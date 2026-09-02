@@ -1,13 +1,14 @@
-Data synchronisation tool for offensive cyber security assessment. Code in incomplete state,
-tried to explore the CDC algorithm but due to time constraints, the repo remains limited.
-Also did dev natively on MacOs and somethings may break on Linux lol.
+Data synchronisation tool for offensive cyber security assessment, built around a design doc
+exploring a custom rsync-alternative using content-defined chunking (CDC). See the
+[Experimental/AI](#experimentalai) section below for where that CDC work stands.
 
 ![data_synchronisation_tool.drawio.png](docs/data_synchronisation_tool.drawio.png)
 
 ## Building
 
-This is a CMake project (requires CMake >= 3.20 and a C23-capable compiler). Building from the
-repo root generates both the `sync_client` and `sync_server` binaries:
+This is a CMake project (requires CMake >= 3.20 and a C23-capable compiler). Builds and runs on
+both macOS (Apple Clang) and Linux (verified on Ubuntu 24.04 / GCC 13). Building from the repo
+root generates both the `sync_client` and `sync_server` binaries:
 
 ```
 cmake -B build -S .
@@ -20,12 +21,12 @@ The resulting executables are placed at `build/client/sync_client` and `build/se
 ## Experimental/AI
 There exists an experimental branch to see how far AI could go with the design doc.
 
-This branch implements the design doc's content-defined chunking (CDC) transfer mechanism
-end-to-end as a small, runnable demo. Everything else in the design (QUIC, compression, the
-on-disk state DB, the file-system watcher, multi-directory support) is deliberately **not**
-implemented yet - see [What's out of scope](#whats-out-of-scope-for-this-demo) below. The goal
-here was just to prove the CDC diffing idea actually works over a real socket, not to build the
-whole system.
+This branch picks up the codebase from its early proof-of-concept starting point and fleshes it
+out into a working end-to-end demo of the design doc's content-defined chunking (CDC) transfer
+mechanism. Everything else in the design (QUIC, compression, the on-disk state DB, the
+file-system watcher, multi-directory support) is deliberately **not** implemented yet - see
+[What's out of scope](#whats-out-of-scope-for-this-demo) below. The goal here was just to prove
+the CDC diffing idea actually works over a real socket, not to build the whole system.
 
 ### Running the demo
 
@@ -100,15 +101,13 @@ this file verify" - consistent with the design doc's "collection server" framing
 don't mirror deletions).
 
 **Reliability, in this scope.** `sendAll`/`recvAll` (`shared/protocol.c`) loop until a full
-buffer is moved, since a single `send()`/`recv()` isn't guaranteed to - the original code's
-one-shot `send()`/`recv()` calls would have silently truncated on anything larger than a socket
-buffer. Writes on the server are atomic (`shared/fileUtil.c` writes to a `.tmp` file, then
-`rename()`s it into place), so a crash mid-write can't leave a half-written file behind.
+buffer is moved, since a single `send()`/`recv()` isn't guaranteed to move the whole buffer.
+Writes on the server are atomic (`shared/fileUtil.c` writes to a `.tmp` file, then `rename()`s
+it into place), so a crash mid-write can't leave a half-written file behind.
 
 ### What's out of scope for this demo
 
-Kept out deliberately, per the brief ("keep using TCP, don't worry about compression, QUIC, or
-the DB - just get some sort of CDC working"):
+Kept out deliberately, per the brief:
 
 - **Transport**: plain TCP, no QUIC, no TLS. The design's confidentiality/integrity-in-transit
   argument for QUIC still applies to a real deployment; this demo just doesn't need it to prove
@@ -125,15 +124,10 @@ the DB - just get some sort of CDC working"):
 - **Multiple connections / retry-on-drop**: one connection, one pass over the directory, then
   exit. No reconnect-and-resume loop or cron/systemd wrapper yet.
 
-### Other changes on this branch
+### Notes
 
-- Replaced the old `list.c`/`list.h` linked-list scaffolding (which didn't compile -
-  `addItemToFileList` was an empty stub) and the old single-hardcoded-file `test.txt` "quick
-  check" exchange with the CDC pipeline described above.
-- Fixed a real bug in the JSON config parsing: `server_port`/`scan_interval_seconds` were read
-  into uninitialized, non-null-terminated stack buffers before being passed to `atoi`. The new
-  `sjCopyStringZ` helper bounds-checks and null-terminates.
-- Swapped `<sys/syslimits.h>` (Darwin/BSD-only) for `<limits.h>` for `PATH_MAX`, since the
-  former doesn't exist on Linux and this project is meant to be cross-platform.
-- Lowered `cmake_minimum_required` from 4.3 to 3.20 - nothing in the project actually needs 4.3,
-  it was just whatever the original author's local CMake happened to be.
+- `cmake_minimum_required` is set to 3.20 rather than a newer version, since nothing in the
+  project actually needs anything more recent and it keeps the build portable across common
+  Linux CMake versions as well as macOS.
+- `PATH_MAX` comes from `<limits.h>` rather than a platform-specific header, so it resolves the
+  same way on both macOS and Linux.

@@ -231,7 +231,11 @@ int main(const int argc, char** argv) {
         if (entry->d_name[0] == '.') continue; // skips ".", "..", and hidden files
 
         char fullPath[PATH_MAX];
-        snprintf(fullPath, sizeof(fullPath), "%s/%s", config.directoryPath, entry->d_name);
+        const int written = snprintf(fullPath, sizeof(fullPath), "%s/%s", config.directoryPath, entry->d_name);
+        if (written < 0 || (size_t)written >= sizeof(fullPath)) {
+            printf("  path too long for %s, skipping\n", entry->d_name);
+            continue;
+        }
         if (!isRegularFile(fullPath)) continue;
 
         if (syncFile(socketFd, fullPath, entry->d_name)) filesSynced++;
