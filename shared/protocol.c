@@ -1,69 +1,55 @@
 //
-// Created by MacbookPro on 28/8/2026.
+// Created by MacbookPro on 22/8/2026.
 //
 #include <protocol.h>
-#include <stdio.h>
+#include <sys/socket.h>
 #include <stdlib.h>
-#include <string.h>
 
-// allocates memory for a serialized msg:
-void* serializeMessage(const MessageType type, uint32_t dataLength, const uint32_t dataItems, void* data, uint32_t* outputLength) {
-    void* serializedMessage = NULL;
-
-    // all msgs will have the main header:
-    ProtocolHeader newHeader = {
-        .type = type,
-        .length = 0     // to fill in.
-    };
-
-    switch (type) {
-        case QUICK_CHECK_EXCHANGE:
-            // data will be the item headers:
-            QuickCheckHeader newQuickCheckHeader = {
-                .totalFiles = dataItems,
-                .totalBytes = dataLength
-            };
-            *outputLength = sizeof(newHeader) + sizeof(newQuickCheckHeader) + dataLength;
-            serializedMessage = malloc(*outputLength);
-            // Pack data into the buffer:
-            void* offset = serializedMessage;
-            newHeader.length = sizeof(QuickCheckHeader) + dataLength;
-            memcpy(offset, &newHeader, sizeof(newHeader));
-            offset+= sizeof(newHeader);
-            memcpy(offset, &newQuickCheckHeader, sizeof(newQuickCheckHeader));
-            offset += sizeof(newQuickCheckHeader);
-            memcpy(offset, data, dataLength);
-            break;
-
-        default:
-            printf("error: unknown message type\n"); break;
-            goto fail;
+bool sendAll(const int socketFd, const void* data, const size_t length) {
+    const uint8_t* bytes = data;
+    size_t sent = 0;
+    while (sent < length) {
+        const ssize_t result = send(socketFd, bytes + sent, length - sent, 0);
+        if (result <= 0) return false; // error, or peer gone
+        sent += (size_t)result;
     }
-
-
-    fail:
-    return serializedMessage;
+    return true;
 }
 
-// outputArray returned
-void* deserializeMessage(const MessageType type, void* messageBuffer,
-                        uint32_t messageBufferLength,  uint32_t* outputLength) {
-    void* deserializedData = NULL;
-    switch (type) {
-        case QUICK_CHECK_EXCHANGE:
-            // we are going to get an array of all the files or directories,
-            QuickCheckHeader* receievedHdr = (QuickCheckHeader*)messageBuffer;
-            *outputLength = receievedHdr->totalFiles;
-            deserializedData = messageBuffer += sizeof(QuickCheckHeader);
+bool recvAll(const int socketFd, void* buffer, const size_t length) {
+    uint8_t* bytes = buffer;
+    size_t received = 0;
+    while (received < length) {
+        const ssize_t result = recv(socketFd, bytes + received, length - received, 0);
+        if (result <= 0) return false; // 0 = peer closed the connection, <0 = error
+        received += (size_t)result;
+    }
+    return true;
+}
 
+bool sendMessage(const int socketFd, const MessageType type, const void* payload, const uint32_t payloadLength) {
+    const ProtocolHeader header = {.type = type, .length = payloadLength};
+    if (!sendAll(socketFd, &header, sizeof(header))) return false;
+    if (payloadLength > 0 && !sendAll(socketFd, payload, payloadLength)) return false;
+    return true;
+}
 
-            break;
+bool recvMessage(const int socketFd, MessageType* outType, void** outPayload, uint32_t* outPayloadLength) {
+    ProtocolHeader header;
+    if (!recvAll(socketFd, &header, sizeof(header))) return false;
 
-        default:
-        printf("error: unknown message type\n"); break;
-        goto fail;
+    void* payload = NULL;
+    if (header.length > 0) {
+        payload = malloc(header.length);
+        if (payload == NULL) return false;
+        if (!recvAll(socketFd, payload, header.length)) {
+            free(payload);
+            return false;
+        }
     }
 
-    fail:
-    return deserializedData;
+    *outType = header.type;
+    *outPayload = payload;
+    *outPayloadLength = header.length;
+    return true;
 }

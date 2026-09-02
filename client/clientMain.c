@@ -1,245 +1,245 @@
 //
 // Created by MacbookPro on 22/8/2026.
 //
+// Client: connects to the server, then walks a single watched directory
+// (non-recursively, for this demo) and syncs every regular file in it using
+// content-defined chunking - only chunks the server doesn't already have a
+// matching hash for are sent over the wire.
 #include <stdio.h>
-#include <unistd.h>
-#include <sys/syslimits.h>
-
-#define SJ_IMPL 1
-#include <math.h>
-#include <sj.h> // json library I pulled in - source mentioned in shared/sj.h
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <limits.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+
+#define SJ_IMPL 1
+#include <sj.h> // json library I pulled in - source mentioned in shared/sj.h
+
 #include <protocol.h>
-#define CLIENT_CONFIG "../../client/clientConfig.json"
-#define MAX_IP_SIZE 16
+#include <cdc.h>
+#include <cdcProtocol.h>
+#include <fileUtil.h>
 
-// Returns the string of the file contents, or null on failure.
-// `fileSize` is also returned as we dynamically allocate memory for this
-// todo: look into making this static and move to shared lib
-// todo: add more compiler warnings
-// todo: Upload to git
-// todo: consider making a src folder
-char* readFileToString(const char* fileName, long* fileSize) {
-    char* result = nullptr;
-    FILE* file = fopen(fileName, "rb");
-    if (file == NULL) goto fail;
+#define DEFAULT_CLIENT_CONFIG "client/clientConfig.json"
+#define MAX_IP_SIZE 16 // "255.255.255.255" + '\0'
 
-    // Read to the end of the file to get the total amount of bytes we need to allocate
-    if (fseek(file, 0, SEEK_END) != 0) {
-        printf("error seeking to end of file\n");
-        fclose(file);
-        goto fail;
-    }
-    *fileSize = ftell(file);
-    if (*fileSize < 0) {
-        printf("error using ftell to get file size\n");
-        fclose(file);
-        goto fail;
-    }
-
-    result = malloc(*fileSize + 1);
-    if (result == NULL) {
-        printf("error allocating memory\n");
-        fclose(file);
-        goto fail;
-    }
-    // return to start of file:
-    rewind(file);
-
-    // read contents:
-    const size_t bytesRead = fread(result, 1, *fileSize, file);
-    if (bytesRead < (size_t)fileSize && ferror(file)) {
-        perror("Error reading file");
-        free(result);
-        fclose(file);
-        goto fail;
-    }
-
-    result[bytesRead] = '\0';
-    fclose(file);
-
-    fail:
-    return result;
-}
+typedef struct {
+    char serverIp[MAX_IP_SIZE];
+    uint16_t serverPort;
+    uint32_t scanIntervalSeconds; // parsed for config fidelity; this one-shot demo doesn't loop on it
+    char directoryPath[PATH_MAX];
+} ClientConfig;
 
 // note: this is borrowed from the sj.h demo file "object.c"
-bool sj_eq(sj_Value val, char *s) {
-    size_t len = val.end - val.start;
+static bool sjEq(const sj_Value val, const char* s) {
+    const size_t len = val.end - val.start;
     return strlen(s) == len && !memcmp(s, val.start, len);
 }
-// also borrowed:
-void sj_print(sj_Value val) {
-    printf("%.*s\n", (int)(val.end-val.start), val.start);
+
+// Copies a sj string value into a fixed buffer, bounds-checked and
+// null-terminated. sj values aren't null-terminated on their own - the
+// original version of this helper didn't check length or terminate, which
+// left server_port/scan_interval_seconds parsing to read uninitialized bytes.
+static bool sjCopyStringZ(char* dest, const size_t destCapacity, const sj_Value val) {
+    const size_t len = (size_t)(val.end - val.start);
+    if (len + 1 > destCapacity) return false;
+    memcpy(dest, val.start, len);
+    dest[len] = '\0';
+    return true;
 }
 
-void sj_copyStringToValue(char* dest, const sj_Value source) {
-    memcpy(dest, source.start, source.end-source.start);
-}
+static bool loadConfig(const char* path, ClientConfig* config) {
+    memset(config, 0, sizeof(*config));
 
-int main() {
-    int error = 0;
-    // configuration options:
-    char serverIp[MAX_IP_SIZE] = {0};
-    uint16_t serverPort = 0;
-    uint32_t scanInterval = 0;
-    char directoryPath[PATH_MAX] = {0};
-
-    // todo: cmdline args
-    printf("Data synchronisation tool:\n");
-
-    // first check if our local config file exists and get a pointer to the data:
-    long fileSize = 0;
-    char* localConfig = readFileToString(CLIENT_CONFIG, &fileSize);
-    if (localConfig == NULL) {
-            printf("error reading config :(\n");
-            error = -1;
-            goto fail;
+    uint8_t* fileData = NULL;
+    size_t fileLength = 0;
+    if (!readFileBytes(path, &fileData, &fileLength)) {
+        printf("error reading config '%s'\n", path);
+        return false;
     }
 
-    printf("Config loaded - total size: %ld\n", fileSize);
-
-    // load our config:
-    sj_Reader newReader = sj_reader(localConfig, fileSize);
-    sj_Value newJsonObject = sj_read(&newReader);
+    sj_Reader reader = sj_reader((char*)fileData, fileLength);
+    const sj_Value root = sj_read(&reader);
     sj_Value key, val;
-    while (sj_iter_object(&newReader, newJsonObject, &key, &val)) {
-        // todo: make this a switch
-        if (sj_eq(key, "server_ip_address")) {
-            sj_copyStringToValue(serverIp, val);
-            printf("Server IP address: %s\n", serverIp);
-        }
-        if (sj_eq(key, "server_port")) {
-            char x[6];
-            sj_copyStringToValue(x, val);
-            printf("Server port: %s\n", x);
-            serverPort = atoi(x);
-        }
-        if (sj_eq(key, "scan_interval_seconds")) {
-            char x[32];
-            sj_copyStringToValue(x, val);
-            printf("Scan interval (seconds): %s\n", x);
-            scanInterval = atoi(x); //todo: change to strtol or custom
-        }
-        if (sj_eq(key, "directory_paths")) {
-            sj_copyStringToValue(directoryPath, val);
-            printf("Directory to watch: %s\n", directoryPath);
+    while (sj_iter_object(&reader, root, &key, &val)) {
+        if (sjEq(key, "server_ip_address")) {
+            sjCopyStringZ(config->serverIp, sizeof(config->serverIp), val);
+        } else if (sjEq(key, "server_port")) {
+            char portBuf[16] = {0};
+            sjCopyStringZ(portBuf, sizeof(portBuf), val);
+            config->serverPort = (uint16_t)strtol(portBuf, NULL, 10);
+        } else if (sjEq(key, "scan_interval_seconds")) {
+            char intervalBuf[32] = {0};
+            sjCopyStringZ(intervalBuf, sizeof(intervalBuf), val);
+            config->scanIntervalSeconds = (uint32_t)strtol(intervalBuf, NULL, 10);
+        } else if (sjEq(key, "directory_paths")) {
+            sjCopyStringZ(config->directoryPath, sizeof(config->directoryPath), val);
         }
     }
-    free(localConfig);
+    free(fileData);
 
-    // begin rsync algorithm:
+    printf("Config loaded: server=%s:%u watching='%s' (scan_interval=%us, unused by this one-shot demo)\n",
+           config->serverIp, config->serverPort, config->directoryPath, config->scanIntervalSeconds);
+    return true;
+}
 
-    // 1. Divide a file up into 'S' blocks: Where 'S' is the sqrt of file size (or 700) whichever is bigger
-    // 1.5 get filesize:
-    struct stat sb;
-    long long testTxtFileSize = 0;
-    if (stat("../../client/test.txt", &sb) == 0) {
-        testTxtFileSize = sb.st_size;
-    }
-    else {
-        printf("error reading file\n");
-        goto fail;
-    }
-    printf("File size: %lld\n", testTxtFileSize);
+static bool isRegularFile(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
 
-    printf("Calculating block size...\n");
-    double sqrtFileSize = floor(sqrt((double)testTxtFileSize));
-    printf("sqrtFileSize: %f\n", sqrtFileSize);
+// Syncs one file: chunk it locally, send the manifest, send back whichever
+// chunks the server says it's missing, then report the server's verification.
+static bool syncFile(const int socketFd, const char* fullPath, const char* fileName) {
+    bool success = false;
+    uint8_t* fileData = NULL;
+    size_t fileLength = 0;
+    CdcChunkSet chunkSet = {0};
+    void* manifestPayload = NULL;
+    void* neededPayload = NULL;
+    void* chunkDataPayload = NULL;
+    void* completePayload = NULL;
 
-    double blockSize = (sqrtFileSize > 700) ? sqrtFileSize : 700;
-
-    printf("Block size: %f\n", blockSize);
-
-
-    // Connect to server:
-    int client_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (client_fd < 0) {
-        perror("Socket creation error");
-        exit(EXIT_FAILURE);
+    if (!readFileBytes(fullPath, &fileData, &fileLength)) {
+        printf("  could not read %s, skipping\n", fileName);
+        goto done;
     }
 
-    struct sockaddr_in serv_addr;
-    serv_addr.sin_family = AF_INET; // IPv4 protocol family
-    serv_addr.sin_port = htons(serverPort);
+    chunkSet = cdcChunkBuffer(fileData, fileLength);
+    char hexHash[65];
+    sha256ToHex(chunkSet.fileHash, hexHash);
+    printf("-> %s (%zu bytes, %u chunks, sha256 %.12s...)\n", fileName, fileLength, chunkSet.chunkCount, hexHash);
 
-    if (inet_pton(AF_INET, serverIp, &serv_addr.sin_addr) <= 0) {
-        perror("Invalid address or Address not supported");
-        close(client_fd);
-        goto fail;
+    uint32_t manifestLength = 0;
+    manifestPayload = buildManifestPayload(fileName, (uint32_t)fileLength, &chunkSet, &manifestLength);
+    if (!sendMessage(socketFd, MSG_CDC_MANIFEST, manifestPayload, manifestLength)) {
+        printf("   failed to send manifest\n");
+        goto done;
     }
 
-    printf("Connecting to server at %s:%d...\n", serverIp, serverPort);
-
-    if (connect(client_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("Connection Failed");
-        close(client_fd);
-        goto fail;
+    MessageType type;
+    uint32_t neededLength = 0;
+    if (!recvMessage(socketFd, &type, &neededPayload, &neededLength) || type != MSG_CDC_NEEDED_CHUNKS) {
+        printf("   did not get a needed-chunks response\n");
+        goto done;
     }
 
-    printf("Connected!\n");
-    // Exchange 1 [SEND]: Versioning (not rly necessary atm lol)
-    printf("Sending version number...\n");
-    const InitialExchangeHeader initialHeader = {RSYNC_ALGORITHM};
-    int sendResult = send(client_fd, &initialHeader, sizeof(InitialExchangeHeader), 0);
-    if (sendResult < 0) {
-        perror("send error");
-        goto fail;
+    const uint32_t* neededIndices = NULL;
+    uint32_t neededCount = 0;
+    if (!parseNeededChunksPayload(neededPayload, neededLength, &neededIndices, &neededCount)) {
+        printf("   malformed needed-chunks response\n");
+        goto done;
     }
 
-    // Exchange 1 [RECV]: Versioning, awaiting confirmation from server on a version
-    printf("Awaiting Versioning response...\n");
+    uint32_t chunkDataLength = 0;
+    chunkDataPayload = buildChunkDataPayload(fileData, chunkSet.chunks, neededIndices, neededCount, &chunkDataLength);
+    if (!sendMessage(socketFd, MSG_CDC_CHUNK_DATA, chunkDataPayload, chunkDataLength)) {
+        printf("   failed to send chunk data\n");
+        goto done;
+    }
+
+    printf("   sent %u/%u chunks (%.0f%% reused from server's copy)\n",
+           neededCount, chunkSet.chunkCount,
+           chunkSet.chunkCount ? 100.0 * (double)(chunkSet.chunkCount - neededCount) / chunkSet.chunkCount : 0.0);
+
+    MessageType completeType;
+    uint32_t completeLength = 0;
+    if (!recvMessage(socketFd, &completeType, &completePayload, &completeLength)
+        || completeType != MSG_CDC_SYNC_COMPLETE || completeLength < sizeof(CdcSyncCompleteHeader)) {
+        printf("   did not get a completion response\n");
+        goto done;
+    }
+
+    CdcSyncCompleteHeader completeHeader;
+    memcpy(&completeHeader, completePayload, sizeof(completeHeader));
+    printf("   server verification: %s\n", completeHeader.success ? "OK" : "FAILED");
+    success = completeHeader.success != 0;
+
+    done:
+    free(manifestPayload);
+    free(neededPayload);
+    free(chunkDataPayload);
+    free(completePayload);
+    cdcFreeChunkSet(&chunkSet);
+    free(fileData);
+    return success;
+}
+
+int main(const int argc, char** argv) {
+    printf("Data synchronisation tool - client\n");
+    const char* configPath = argc > 1 ? argv[1] : DEFAULT_CLIENT_CONFIG;
+
+    ClientConfig config;
+    if (!loadConfig(configPath, &config)) return 1;
+
+    DIR* dir = opendir(config.directoryPath);
+    if (dir == NULL) {
+        perror("opendir");
+        printf("could not open watched directory '%s'\n", config.directoryPath);
+        return 1;
+    }
+
+    const int socketFd = socket(AF_INET, SOCK_STREAM, 0);
+    if (socketFd < 0) {
+        perror("socket");
+        closedir(dir);
+        return 1;
+    }
+
+    struct sockaddr_in serverAddress = {0};
+    serverAddress.sin_family = AF_INET;
+    serverAddress.sin_port = htons(config.serverPort);
+    if (inet_pton(AF_INET, config.serverIp, &serverAddress.sin_addr) <= 0) {
+        printf("invalid server address '%s'\n", config.serverIp);
+        close(socketFd);
+        closedir(dir);
+        return 1;
+    }
+
+    printf("Connecting to %s:%u...\n", config.serverIp, config.serverPort);
+    if (connect(socketFd, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) < 0) {
+        perror("connect");
+        close(socketFd);
+        closedir(dir);
+        return 1;
+    }
+    printf("Connected. Negotiating protocol version...\n");
+
+    const InitialExchangeHeader initialHeader = {.version = PROTOCOL_VERSION_CDC_V1};
     InitialExchangeHeader initialResponse = {0};
-    int recvResult = recv(client_fd, &initialResponse, sizeof(initialResponse), 0);
-    if (recvResult < 0) {
-        printf("recv failed\n");
-        goto fail;
+    if (!sendAll(socketFd, &initialHeader, sizeof(initialHeader)) ||
+        !recvAll(socketFd, &initialResponse, sizeof(initialResponse))) {
+        printf("version handshake failed\n");
+        close(socketFd);
+        closedir(dir);
+        return 1;
     }
-    if (initialResponse.VERSION != initialHeader.VERSION) {
-        printf("Version's do not match\n");
-        goto fail;
+    if (initialResponse.version != initialHeader.version) {
+        printf("server does not support protocol version %d\n", initialHeader.version);
+        close(socketFd);
+        closedir(dir);
+        return 1;
     }
-    else {
-        printf("Version matches. beginning initial information exchange\n");
+    printf("Version %d confirmed. Syncing '%s'...\n", initialHeader.version, config.directoryPath);
+
+    int filesSynced = 0, filesFailed = 0;
+    const struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue; // skips ".", "..", and hidden files
+
+        char fullPath[PATH_MAX];
+        snprintf(fullPath, sizeof(fullPath), "%s/%s", config.directoryPath, entry->d_name);
+        if (!isRegularFile(fullPath)) continue;
+
+        if (syncFile(socketFd, fullPath, entry->d_name)) filesSynced++;
+        else filesFailed++;
     }
-    switch (initialHeader.VERSION) {
-        case 1:
-            // Exchange 2 [SEND]: File list exchange. At the moment just going to do a "quick check",
-            // where we send the file name, the file size, and the last time it was modified.
-            // U could run the checksum here too but for now lets just get something working.
+    closedir(dir);
+    close(socketFd);
 
-            // Format will be:
-            // [main header][QuickCheckHeader: total files, total size of msg]List[QuickCheckItemHeader][ItemNameString\0]...
-            // Interestingly, rsync skips the main header, and goes for an approach where it streams items in,
-            // where the motivation is that you don't know how long a scan will take, so you send items one by one
-            char* fileName = "test.txt";
-            char* msg = malloc (sizeof(QuickCheckItemHeader) + strlen(fileName) + 1);
-            QuickCheckItemHeader* newQuickCheckItemHeader = (QuickCheckItemHeader*)msg;
-            *newQuickCheckItemHeader = (QuickCheckItemHeader){
-                .fileSize = sb.st_size,
-                .timeModified = sb.st_mtimespec.tv_nsec,    // st_mtimespec is platform specific to apple and freeBSD...
-            };
-            strcpy(msg + sizeof(QuickCheckItemHeader), fileName);   //todo: insecure but whatever
-            uint32_t dataLength = strlen(fileName) + 1 + sizeof(QuickCheckItemHeader);
-            uint32_t bufferLength = 0;
-            void* messageBuffer = serializeMessage(QUICK_CHECK_EXCHANGE, dataLength, 1, msg, &bufferLength);
-            printf("Serialized data: %d\n", bufferLength);
-
-            // Ideally here u would apply some sort of compression, but for this example, just going to send over tcp
-
-            printf("Sending file list...\n");
-            sendResult = send(client_fd, messageBuffer, bufferLength, 0);
-            free(messageBuffer);
-            free(msg);
-        break;
-
-    }
-
-
-    printf("Terminating...\n");
-    fail:
-    return error;
+    printf("Done: %d file(s) synced, %d failed.\n", filesSynced, filesFailed);
+    return filesFailed > 0 ? 1 : 0;
 }
