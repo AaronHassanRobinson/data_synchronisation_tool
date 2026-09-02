@@ -1,6 +1,6 @@
-Data synchronisation tool for offensive cyber security assessment. Code in incomplete state,
-tried to explore the CDC algorithm but due to time constraints, the repo remains limited.
-Also did dev natively on MacOs and somethings may break on Linux lol.
+Data synchronisation tool for offensive cyber security assessment. Hand written code in incomplete state,
+tried to explore the CDC algorithm but due to time constraints, the repo remains limited. Instead, checkout the branch
+experimental/ai to see a working implementation of a sync based off the design document and diagram. 
 
 ![data_synchronisation_tool.drawio.png](docs/data_synchronisation_tool.drawio.png)
 
