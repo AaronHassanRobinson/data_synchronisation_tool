@@ -1,0 +1,4 @@
+# Cron alternative to the systemd unit: relaunch the daemon if it isn't running, checked every
+# minute, plus a nightly --once pass as belt-and-braces. Install with `crontab deploy/sync-client.cron`.
+* * * * *  cd /opt/data-sync && pgrep -f 'sync_client .*clientConfig.json' >/dev/null || nohup ./sync_client clientConfig.json >> sync-client.log 2>&1 &
+0 3 * * *  cd /opt/data-sync && ./sync_client clientConfig.json --once >> sync-client-nightly.log 2>&1

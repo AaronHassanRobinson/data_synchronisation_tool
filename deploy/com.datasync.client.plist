@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd agent (macOS). Install:
+       cp deploy/com.datasync.client.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.datasync.client.plist -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.datasync.client</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/data-sync/sync_client</string>
+        <string>/opt/data-sync/clientConfig.json</string>
+    </array>
+    <key>WorkingDirectory</key><string>/opt/data-sync</string>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>/opt/data-sync/sync-client.log</string>
+    <key>StandardErrorPath</key><string>/opt/data-sync/sync-client.log</string>
+</dict>
+</plist>

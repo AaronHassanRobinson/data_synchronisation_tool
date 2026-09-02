@@ -1,0 +1,20 @@
+# systemd unit (Linux). Keeps the client running across crashes and reboots.
+#   sudo cp deploy/sync-client.service /etc/systemd/system/
+#   sudo systemctl enable --now sync-client
+[Unit]
+Description=Data synchronisation client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/data-sync
+ExecStart=/opt/data-sync/sync_client /opt/data-sync/clientConfig.json
+Restart=always
+RestartSec=5
+# Full scans reconcile anything that changed while we were down, so an abrupt kill is safe.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

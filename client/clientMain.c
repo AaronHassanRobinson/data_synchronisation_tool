@@ -1,249 +1,236 @@
 //
-// Created by MacbookPro on 22/8/2026.
+// Client entry point: the main loop with its event queue.
 //
-// Client: connects to the server, then walks a single watched directory
-// (non-recursively, for this demo) and syncs every regular file in it using
-// content-defined chunking - only chunks the server doesn't already have a
-// matching hash for are sent over the wire.
+//   sync_client [config.json] [--once]
+//
+// Startup: load config, open the state DB, connect + authenticate, start the watcher, and run
+// a full scan (this catches everything that changed while the process wasn't running - the
+// design's answer to "the box restarted" is a cron/systemd/launchd/schtasks wrapper that
+// restarts us, and this scan). Then loop: drain watcher events into a pending batch, flush the
+// batch when the batching rule says so, run the periodic full scan, and reconnect with backoff
+// whenever the transport drops (pending work is kept, not lost).
+//
+// --once: connect, full scan, flush everything, exit. Used by the integration tests and cron.
+//
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <limits.h>
-#include <dirent.h>
-#include <sys/stat.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
+#include <signal.h>
+#include <stdatomic.h>
 
-#define SJ_IMPL 1
-#include <sj.h> // json library I pulled in - source mentioned in shared/sj.h
-
-#include <protocol.h>
-#include <cdc.h>
-#include <cdcProtocol.h>
-#include <fileUtil.h>
+#include "config.h"
+#include "db.h"
+#include "eventQueue.h"
+#include "scanner.h"
+#include "session.h"
+#include "sync.h"
+#include "watcher.h"
 
 #define DEFAULT_CLIENT_CONFIG "client/clientConfig.json"
-#define MAX_IP_SIZE 16 // "255.255.255.255" + '\0'
+#define POP_TIMEOUT_MS 250
+
+static atomic_bool stopRequested = false;
+static void onSignal(int signal) { (void)signal; atomic_store(&stopRequested, true); }
 
 typedef struct {
-    char serverIp[MAX_IP_SIZE];
-    uint16_t serverPort;
-    uint32_t scanIntervalSeconds; // parsed for config fidelity; this one-shot demo doesn't loop on it
-    char directoryPath[PATH_MAX];
-} ClientConfig;
+    SyncEvent* events;
+    size_t count, capacity;
+    uint64_t lastEventMs;
+} Batch;
 
-// note: this is borrowed from the sj.h demo file "object.c"
-static bool sjEq(const sj_Value val, const char* s) {
-    const size_t len = val.end - val.start;
-    return strlen(s) == len && !memcmp(s, val.start, len);
+static void batchAdd(Batch* batch, const SyncEvent* event) {
+    for (size_t i = 0; i < batch->count; i++) { // dedup within the batch too
+        if (batch->events[i].kind == event->kind && batch->events[i].rootIndex == event->rootIndex &&
+            strcmp(batch->events[i].relPath, event->relPath) == 0) return;
+    }
+    if (batch->count == batch->capacity) {
+        batch->capacity = batch->capacity ? batch->capacity * 2 : 64;
+        batch->events = realloc(batch->events, batch->capacity * sizeof(SyncEvent));
+    }
+    batch->events[batch->count++] = *event;
+    batch->lastEventMs = platformMonotonicMs();
 }
 
-// Copies a sj string value into a fixed buffer, bounds-checked and
-// null-terminated. sj values aren't null-terminated on their own - the
-// original version of this helper didn't check length or terminate, which
-// left server_port/scan_interval_seconds parsing to read uninitialized bytes.
-static bool sjCopyStringZ(char* dest, const size_t destCapacity, const sj_Value val) {
-    const size_t len = (size_t)(val.end - val.start);
-    if (len + 1 > destCapacity) return false;
-    memcpy(dest, val.start, len);
-    dest[len] = '\0';
-    return true;
+typedef struct {
+    const ClientConfig* config;
+    StateDb* db;
+    EventQueue* queue;
+    Session session;
+    uint64_t lastScanMs;
+    bool scanPending;
+} Client;
+
+static bool ensureConnected(Client* client, bool once) {
+    if (client->session.connected) return true;
+    uint32_t attempt = 0;
+    while (!atomic_load(&stopRequested)) {
+        if (sessionConnect(&client->session, client->config)) return true;
+        attempt++;
+        if (once && attempt >= 3) return false;
+        printf("client: connection failed (attempt %u), retrying in %us\n", attempt, client->config->reconnectDelaySeconds);
+        for (uint32_t waited = 0; waited < client->config->reconnectDelaySeconds * 1000 && !atomic_load(&stopRequested); waited += 200) {
+            platformSleepMs(200);
+        }
+    }
+    return false;
 }
 
-static bool loadConfig(const char* path, ClientConfig* config) {
-    memset(config, 0, sizeof(*config));
+static void runFullScan(Client* client) {
+    const ScanStats stats = scannerFullScan(client->config, client->db, client->queue);
+    printf("scan: %u files (%u queued), %u directories (%u queued)\n",
+           stats.filesSeen, stats.filesQueued, stats.directoriesSeen, stats.directoriesQueued);
+    client->lastScanMs = platformMonotonicMs();
+    client->scanPending = false;
+}
 
-    uint8_t* fileData = NULL;
-    size_t fileLength = 0;
-    if (!readFileBytes(path, &fileData, &fileLength)) {
-        printf("error reading config '%s'\n", path);
+// Directories first so the server can create them before files land (files whose parent
+// directory wasn't announced still work - the server mkdir -p's from the path - but this keeps
+// the metadata records in the natural order).
+static int eventOrder(const void* a, const void* b) {
+    const SyncEvent* ea = a;
+    const SyncEvent* eb = b;
+    if (ea->kind != eb->kind) return ea->kind == EVENT_DIR_CREATED ? -1 : 1;
+    return strcmp(ea->relPath, eb->relPath);
+}
+
+// Returns false if the connection dropped part-way (unprocessed events stay in the batch).
+static bool flushBatch(Client* client, Batch* batch) {
+    if (batch->count == 0) return true;
+    qsort(batch->events, batch->count, sizeof(SyncEvent), eventOrder);
+    printf("batch: flushing %zu event(s)\n", batch->count);
+
+    uint32_t synced = 0, unchanged = 0, skipped = 0;
+    uint64_t bytesSent = 0, bytesTotal = 0;
+    size_t processed = 0;
+    bool connectionOk = true;
+    while (processed < batch->count && connectionOk && !atomic_load(&stopRequested)) {
+        const SyncEvent* event = &batch->events[processed];
+        SyncStatus status;
+        if (event->kind == EVENT_DIR_CREATED) {
+            status = syncDirectory(&client->session, client->config, client->db, event->rootIndex, event->relPath);
+            if (status == SYNC_OK) printf("  dir  %s\n", event->relPath);
+        } else {
+            SyncFileStats stats;
+            status = syncFile(&client->session, client->config, client->db, event->rootIndex, event->relPath, &stats);
+            if (status == SYNC_OK) {
+                const uint32_t reused = stats.chunkCount - stats.chunksSent + stats.chunksResent;
+                printf("  file %s: %llu bytes, %u chunks, sent %u (%llu bytes, %u resent), server already had %u\n",
+                       event->relPath, (unsigned long long)stats.bytesTotal, stats.chunkCount, stats.chunksSent,
+                       (unsigned long long)stats.bytesSent, stats.chunksResent, reused);
+                bytesSent += stats.bytesSent;
+                bytesTotal += stats.bytesTotal;
+            } else if (status != SYNC_UNCHANGED && status != SYNC_DISCONNECTED) {
+                printf("  file %s: %s\n", event->relPath, syncStatusName(status));
+            }
+        }
+        if (status == SYNC_DISCONNECTED) {
+            connectionOk = false; // leave `processed` pointing at this event so it is retried
+            break;
+        }
+        if (status == SYNC_OK) synced++;
+        else if (status == SYNC_UNCHANGED) unchanged++;
+        else skipped++;
+        processed++;
+    }
+
+    dbSave(client->db);
+    if (!connectionOk) {
+        // Keep everything from the failed event onward for the retry after reconnecting.
+        memmove(batch->events, batch->events + processed, (batch->count - processed) * sizeof(SyncEvent));
+        batch->count -= processed;
+        printf("batch: connection lost, %zu event(s) kept for retry\n", batch->count);
+        client->session.connected = false; // don't try to send BYE over a dead link
+        sessionClose(&client->session);
         return false;
     }
-
-    sj_Reader reader = sj_reader((char*)fileData, fileLength);
-    const sj_Value root = sj_read(&reader);
-    sj_Value key, val;
-    while (sj_iter_object(&reader, root, &key, &val)) {
-        if (sjEq(key, "server_ip_address")) {
-            sjCopyStringZ(config->serverIp, sizeof(config->serverIp), val);
-        } else if (sjEq(key, "server_port")) {
-            char portBuf[16] = {0};
-            sjCopyStringZ(portBuf, sizeof(portBuf), val);
-            config->serverPort = (uint16_t)strtol(portBuf, NULL, 10);
-        } else if (sjEq(key, "scan_interval_seconds")) {
-            char intervalBuf[32] = {0};
-            sjCopyStringZ(intervalBuf, sizeof(intervalBuf), val);
-            config->scanIntervalSeconds = (uint32_t)strtol(intervalBuf, NULL, 10);
-        } else if (sjEq(key, "directory_paths")) {
-            sjCopyStringZ(config->directoryPath, sizeof(config->directoryPath), val);
-        }
-    }
-    free(fileData);
-
-    printf("Config loaded: server=%s:%u watching='%s' (scan_interval=%us, unused by this one-shot demo)\n",
-           config->serverIp, config->serverPort, config->directoryPath, config->scanIntervalSeconds);
+    batch->count = 0;
+    printf("batch: done - %u synced, %u unchanged, %u skipped; %llu of %llu bytes sent\n",
+           synced, unchanged, skipped, (unsigned long long)bytesSent, (unsigned long long)bytesTotal);
     return true;
 }
 
-static bool isRegularFile(const char* path) {
-    struct stat st;
-    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
-}
-
-// Syncs one file: chunk it locally, send the manifest, send back whichever
-// chunks the server says it's missing, then report the server's verification.
-static bool syncFile(const int socketFd, const char* fullPath, const char* fileName) {
-    bool success = false;
-    uint8_t* fileData = NULL;
-    size_t fileLength = 0;
-    CdcChunkSet chunkSet = {0};
-    void* manifestPayload = NULL;
-    void* neededPayload = NULL;
-    void* chunkDataPayload = NULL;
-    void* completePayload = NULL;
-
-    if (!readFileBytes(fullPath, &fileData, &fileLength)) {
-        printf("  could not read %s, skipping\n", fileName);
-        goto done;
-    }
-
-    chunkSet = cdcChunkBuffer(fileData, fileLength);
-    char hexHash[65];
-    sha256ToHex(chunkSet.fileHash, hexHash);
-    printf("-> %s (%zu bytes, %u chunks, sha256 %.12s...)\n", fileName, fileLength, chunkSet.chunkCount, hexHash);
-
-    uint32_t manifestLength = 0;
-    manifestPayload = buildManifestPayload(fileName, (uint32_t)fileLength, &chunkSet, &manifestLength);
-    if (!sendMessage(socketFd, MSG_CDC_MANIFEST, manifestPayload, manifestLength)) {
-        printf("   failed to send manifest\n");
-        goto done;
-    }
-
-    MessageType type;
-    uint32_t neededLength = 0;
-    if (!recvMessage(socketFd, &type, &neededPayload, &neededLength) || type != MSG_CDC_NEEDED_CHUNKS) {
-        printf("   did not get a needed-chunks response\n");
-        goto done;
-    }
-
-    const uint32_t* neededIndices = NULL;
-    uint32_t neededCount = 0;
-    if (!parseNeededChunksPayload(neededPayload, neededLength, &neededIndices, &neededCount)) {
-        printf("   malformed needed-chunks response\n");
-        goto done;
-    }
-
-    uint32_t chunkDataLength = 0;
-    chunkDataPayload = buildChunkDataPayload(fileData, chunkSet.chunks, neededIndices, neededCount, &chunkDataLength);
-    if (!sendMessage(socketFd, MSG_CDC_CHUNK_DATA, chunkDataPayload, chunkDataLength)) {
-        printf("   failed to send chunk data\n");
-        goto done;
-    }
-
-    printf("   sent %u/%u chunks (%.0f%% reused from server's copy)\n",
-           neededCount, chunkSet.chunkCount,
-           chunkSet.chunkCount ? 100.0 * (double)(chunkSet.chunkCount - neededCount) / chunkSet.chunkCount : 0.0);
-
-    MessageType completeType;
-    uint32_t completeLength = 0;
-    if (!recvMessage(socketFd, &completeType, &completePayload, &completeLength)
-        || completeType != MSG_CDC_SYNC_COMPLETE || completeLength < sizeof(CdcSyncCompleteHeader)) {
-        printf("   did not get a completion response\n");
-        goto done;
-    }
-
-    CdcSyncCompleteHeader completeHeader;
-    memcpy(&completeHeader, completePayload, sizeof(completeHeader));
-    printf("   server verification: %s\n", completeHeader.success ? "OK" : "FAILED");
-    success = completeHeader.success != 0;
-
-    done:
-    free(manifestPayload);
-    free(neededPayload);
-    free(chunkDataPayload);
-    free(completePayload);
-    cdcFreeChunkSet(&chunkSet);
-    free(fileData);
-    return success;
-}
-
-int main(const int argc, char** argv) {
-    printf("Data synchronisation tool - client\n");
-    const char* configPath = argc > 1 ? argv[1] : DEFAULT_CLIENT_CONFIG;
-
-    ClientConfig config;
-    if (!loadConfig(configPath, &config)) return 1;
-
-    DIR* dir = opendir(config.directoryPath);
-    if (dir == NULL) {
-        perror("opendir");
-        printf("could not open watched directory '%s'\n", config.directoryPath);
-        return 1;
-    }
-
-    const int socketFd = socket(AF_INET, SOCK_STREAM, 0);
-    if (socketFd < 0) {
-        perror("socket");
-        closedir(dir);
-        return 1;
-    }
-
-    struct sockaddr_in serverAddress = {0};
-    serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(config.serverPort);
-    if (inet_pton(AF_INET, config.serverIp, &serverAddress.sin_addr) <= 0) {
-        printf("invalid server address '%s'\n", config.serverIp);
-        close(socketFd);
-        closedir(dir);
-        return 1;
-    }
-
-    printf("Connecting to %s:%u...\n", config.serverIp, config.serverPort);
-    if (connect(socketFd, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) < 0) {
-        perror("connect");
-        close(socketFd);
-        closedir(dir);
-        return 1;
-    }
-    printf("Connected. Negotiating protocol version...\n");
-
-    const InitialExchangeHeader initialHeader = {.version = PROTOCOL_VERSION_CDC_V1};
-    InitialExchangeHeader initialResponse = {0};
-    if (!sendAll(socketFd, &initialHeader, sizeof(initialHeader)) ||
-        !recvAll(socketFd, &initialResponse, sizeof(initialResponse))) {
-        printf("version handshake failed\n");
-        close(socketFd);
-        closedir(dir);
-        return 1;
-    }
-    if (initialResponse.version != initialHeader.version) {
-        printf("server does not support protocol version %d\n", initialHeader.version);
-        close(socketFd);
-        closedir(dir);
-        return 1;
-    }
-    printf("Version %d confirmed. Syncing '%s'...\n", initialHeader.version, config.directoryPath);
-
-    int filesSynced = 0, filesFailed = 0;
-    const struct dirent* entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.') continue; // skips ".", "..", and hidden files
-
-        char fullPath[PATH_MAX];
-        const int written = snprintf(fullPath, sizeof(fullPath), "%s/%s", config.directoryPath, entry->d_name);
-        if (written < 0 || (size_t)written >= sizeof(fullPath)) {
-            printf("  path too long for %s, skipping\n", entry->d_name);
-            continue;
+int main(int argc, char** argv) {
+    const char* configPath = DEFAULT_CLIENT_CONFIG;
+    bool once = false;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--once") == 0) once = true;
+        else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            printf("usage: %s [config.json] [--once]\n", argv[0]);
+            return 0;
         }
-        if (!isRegularFile(fullPath)) continue;
-
-        if (syncFile(socketFd, fullPath, entry->d_name)) filesSynced++;
-        else filesFailed++;
+        else configPath = argv[i];
     }
-    closedir(dir);
-    close(socketFd);
+    signal(SIGINT, onSignal);
+    signal(SIGTERM, onSignal);
+#ifndef _WIN32
+    signal(SIGPIPE, SIG_IGN); // a peer that vanished mid-write is a return code, not a death sentence
+#endif
 
-    printf("Done: %d file(s) synced, %d failed.\n", filesSynced, filesFailed);
-    return filesFailed > 0 ? 1 : 0;
+    setvbuf(stdout, NULL, _IOLBF, 0); // line-buffered even when logging to a file
+    printf("Data synchronisation tool - client\n");
+    ClientConfig config;
+    char error[256];
+    if (!clientConfigLoad(configPath, &config, error, sizeof(error))) {
+        fprintf(stderr, "config: %s\n", error);
+        return 1;
+    }
+    clientConfigPrint(&config);
+    if (!platformNetInit()) return 1;
+
+    Client client = { .config = &config, .db = dbOpen(config.databasePath), .queue = eventQueueCreate() };
+    printf("db: %s (%zu files, %zu directories known)\n", config.databasePath, dbFileCount(client.db), dbDirectoryCount(client.db));
+
+    Watcher* watcher = NULL;
+    if (!once) {
+        watcher = watcherCreate(&config, client.queue);
+        if (!watcherStart(watcher)) {
+            fprintf(stderr, "watcher: failed to start %s backend\n", watcherBackendName(watcher));
+            return 1;
+        }
+        printf("watcher: %s backend running\n", watcherBackendName(watcher));
+    }
+
+    Batch batch = {0};
+    client.scanPending = true;
+    int exitCode = 0;
+
+    while (!atomic_load(&stopRequested)) {
+        if (!ensureConnected(&client, once)) {
+            if (once) { fprintf(stderr, "client: could not reach the server\n"); exitCode = 2; }
+            break;
+        }
+
+        const uint64_t now = platformMonotonicMs();
+        if (client.scanPending || (config.scanIntervalSeconds > 0 && now >= client.lastScanMs + (uint64_t)config.scanIntervalSeconds * 1000)) {
+            runFullScan(&client);
+        }
+
+        SyncEvent event;
+        while (eventQueuePop(client.queue, &event, batch.count == 0 ? POP_TIMEOUT_MS : 0)) {
+            if (event.kind == EVENT_OVERFLOW || event.kind == EVENT_FULL_SCAN) client.scanPending = true;
+            else batchAdd(&batch, &event);
+        }
+
+        // In --once mode there is no watcher, so no batching window: flush as soon as the scan's
+        // events are in, then leave once nothing is pending.
+        const bool flushNow = once ? batch.count > 0
+            : batchShouldFlush(batch.count, batch.lastEventMs, platformMonotonicMs(), config.batchMaxEvents, config.batchWindowSeconds);
+        if (flushNow) {
+            flushBatch(&client, &batch);
+        } else if (batch.count == 0 && !client.scanPending) {
+            if (once) { printf("batch: nothing to sync\n"); break; }
+            platformSleepMs(50);
+        }
+    }
+
+    printf("client: shutting down\n");
+    if (watcher) watcherDestroy(watcher);
+    if (batch.count > 0) printf("client: %zu pending event(s) will be picked up by the next startup scan\n", batch.count);
+    sessionClose(&client.session);
+    dbSave(client.db);
+    dbClose(client.db);
+    eventQueueDestroy(client.queue);
+    free(batch.events);
+    platformNetShutdown();
+    return exitCode;
 }

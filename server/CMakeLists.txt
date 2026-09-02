@@ -1,8 +1,9 @@
-add_executable(sync_server serverMain.c
-        ../shared/protocol.c
-        ../shared/sha256.c
-        ../shared/cdc.c
-        ../shared/cdcProtocol.c
-        ../shared/fileUtil.c)
+add_library(server_core STATIC
+        chunkStore.c
+        serverConfig.c
+        serverSession.c)
+target_include_directories(server_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(server_core PUBLIC shared)
 
-target_link_libraries(sync_server PRIVATE shared)
+add_executable(sync_server serverMain.c)
+target_link_libraries(sync_server PRIVATE server_core)

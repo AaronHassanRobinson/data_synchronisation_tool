@@ -1,35 +1,61 @@
 //
-// Content-defined chunking (CDC): splits a buffer into variable-length
-// chunks at boundaries chosen by a rolling hash over the content, rather
-// than at fixed offsets - so inserting/deleting a byte near the start of a
-// file only changes the chunk(s) around the edit, not every chunk after it
-// (which is what would happen with fixed-size blocks).
+// Content-defined chunking (CDC). A file is split into variable-length chunks at boundaries
+// chosen by a rolling hash over the *content*, not at fixed offsets, so inserting or deleting
+// bytes near the start of a file only changes the chunk(s) around the edit - everything after it
+// re-chunks identically (unlike fixed-size blocks, where every later block would shift).
 //
-// This is a deliberately small FastCDC-style chunker (gear-hash rolling
-// hash, min/max chunk size, no normalized chunking) - enough to demonstrate
-// the idea end to end, not a tuned production implementation.
+// FastCDC-style: gear-hash rolling hash, boundary when the low `maskBits` bits are zero, with
+// min/max chunk size bounds. Parameters are negotiated in HELLO so both ends chunk identically.
 //
 #ifndef DATA_SYNCHRONISATION_TOOL_CDC_H
 #define DATA_SYNCHRONISATION_TOOL_CDC_H
 #include <stddef.h>
-#include "protocol.h" // for CdcChunkDescriptor - the wire format doubles as our in-memory chunk record
-
-// Chunk size bounds, kept small so the demo's example files (a few KB)
-// actually produce several chunks. Real deployments would size these in
-// KB-MB, per the design doc's "configurable" chunk hash / size note.
-#define CDC_MIN_CHUNK_SIZE 64
-#define CDC_MAX_CHUNK_SIZE 2048
-#define CDC_MASK_BITS 8 // boundary probability ~= 1/2^CDC_MASK_BITS -> ~256 byte average chunk
+#include <stdio.h>
+#include "protocol.h" // CdcChunkDescriptor / CdcParamsWire
 
 typedef struct {
-    CdcChunkDescriptor* chunks; // heap array, length chunkCount
+    uint32_t minChunkSize;
+    uint32_t maxChunkSize;
+    uint32_t maskBits; // average chunk ~= 2^maskBits bytes
+} CdcParams;
+
+// Sensible production-ish defaults (~64 KiB average). The demo config overrides these with tiny
+// values so small sample files visibly produce several chunks.
+#define CDC_DEFAULT_MIN_CHUNK_SIZE (16u * 1024u)
+#define CDC_DEFAULT_MAX_CHUNK_SIZE (256u * 1024u)
+#define CDC_DEFAULT_MASK_BITS 16u
+
+bool cdcParamsValid(const CdcParams* params);
+CdcParams cdcParamsFromWire(const CdcParamsWire* wire);
+CdcParamsWire cdcParamsToWire(const CdcParams* params);
+
+typedef struct {
+    CdcChunkDescriptor* chunks; // heap array, chunkCount entries
     uint32_t chunkCount;
-    uint8_t fileHash[SHA256_DIGEST_SIZE]; // hash of the whole buffer, for end-to-end verification
+    uint64_t totalLength;
+    uint8_t fileHash[SHA256_DIGEST_SIZE]; // hash of all the bytes, for end-to-end verification
 } CdcChunkSet;
 
-// Splits `data` (length bytes) into content-defined chunks, hashing each
-// chunk and the buffer as a whole. Caller must free the result with cdcFreeChunkSet.
-CdcChunkSet cdcChunkBuffer(const uint8_t* data, size_t length);
+// Incremental chunker: feed it bytes in any sized pieces, then finish. This is what lets the
+// client chunk a multi-GB file without holding it in memory.
+typedef struct {
+    CdcParams params;
+    uint64_t rollingHash;
+    uint64_t chunkStart;
+    uint64_t position;
+    Sha256Context chunkHash;
+    Sha256Context fileHash;
+    CdcChunkSet* output;
+    uint32_t capacity;
+} CdcChunker;
+
+void cdcChunkerInit(CdcChunker* chunker, const CdcParams* params, CdcChunkSet* output);
+void cdcChunkerFeed(CdcChunker* chunker, const uint8_t* data, size_t length);
+void cdcChunkerFinish(CdcChunker* chunker);
+
+// Convenience wrappers around the incremental chunker.
+CdcChunkSet cdcChunkBuffer(const uint8_t* data, size_t length, const CdcParams* params);
+bool cdcChunkFile(const char* path, const CdcParams* params, CdcChunkSet* out); // streams from disk
 void cdcFreeChunkSet(CdcChunkSet* set);
 
 #endif //DATA_SYNCHRONISATION_TOOL_CDC_H

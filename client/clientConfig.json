@@ -1,6 +1,27 @@
 {
-  "server_ip_address"    : "127.0.0.1",
-  "server_port"          : 9001,
+  "server_ip_address": "127.0.0.1",
+  "server_port": 9001,
+  "client_id": "laptop-1",
+  "pre_shared_key": "change-me-to-a-long-random-secret",
+  "use_tls": true,
+  "server_certificate_sha256": "",
+  "use_compression": true,
+
+  "directory_paths": ["client/roots/documents", "client/roots/logs"],
+  "database_path": "client/sync-state.db",
+
+  "watcher_backend": "native",
   "scan_interval_seconds": 900,
-  "directory_paths": "client/watched_dir"
+  "batch_max_events": 50,
+  "batch_window_seconds": 3,
+  "poll_interval_seconds": 2,
+
+  "reconnect_delay_seconds": 5,
+  "socket_timeout_ms": 30000,
+  "chunk_retry_limit": 3,
+
+  "cdc_min_chunk_size": 64,
+  "cdc_max_chunk_size": 2048,
+  "cdc_mask_bits": 8,
+  "hash_algorithm": "sha256"
 }

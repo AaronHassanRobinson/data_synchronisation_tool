@@ -1,0 +1,9 @@
+build/
+cmake-build-*/
+server_data/
+server/certs/
+client/sync-state.db
+*.tmp
+*.partial
+sync_unit_tmp_*/
+sync_integration_tmp_*/

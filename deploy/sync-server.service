@@ -1,0 +1,14 @@
+# systemd unit (Linux) for the collection server.
+[Unit]
+Description=Data synchronisation collection server
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/data-sync
+ExecStart=/opt/data-sync/sync_server /opt/data-sync/serverConfig.json
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

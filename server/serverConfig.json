@@ -1,0 +1,10 @@
+{
+  "listen_port": 9001,
+  "output_directory": "server_data",
+  "pre_shared_key": "change-me-to-a-long-random-secret",
+  "use_tls": true,
+  "tls_certificate": "server/certs/server.pem",
+  "tls_private_key": "server/certs/server.key",
+  "allowed_client_ids": ["laptop-1"],
+  "socket_timeout_ms": 30000
+}
