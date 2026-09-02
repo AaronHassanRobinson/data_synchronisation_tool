@@ -1,0 +1,95 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Page-1" id="so7GYN_xuZgYGD_w9DBJ">
+    <mxGraphModel dx="3095" dy="1903" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-1" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="&lt;h1&gt;Data synchronisation tool&lt;/h1&gt;" vertex="1">
+          <mxGeometry height="30" width="420" x="150" y="100" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-2" parent="1" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;Client:&amp;nbsp;&lt;/h1&gt;&lt;div&gt;&lt;h3&gt;Main constraints:&lt;/h3&gt;&lt;li&gt;&lt;strong&gt;Change Detection:&lt;/strong&gt; Only files that have been created or modified since the last successful sync should be transferred.&lt;/li&gt;&lt;li&gt;&lt;br&gt;&lt;/li&gt;&lt;li&gt;&lt;strong&gt;Bandwidth Management: &lt;/strong&gt;The utility must minimise the amount of data sent over the wire.&lt;/li&gt;&lt;li&gt;&lt;br&gt;&lt;/li&gt;&lt;li&gt;&lt;strong&gt;Reliability:&lt;/strong&gt;&lt;br&gt; The system must handle unstable network connections. If a transfer is &lt;br&gt;interrupted, it should not require restarting the entire process.\&lt;/li&gt;&lt;li&gt;&lt;br&gt;&lt;/li&gt;&lt;li&gt;&lt;strong&gt;Integrity: &lt;/strong&gt;The server must be able to verify that the file received is an exact copy of the file on your client machine.&lt;/li&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="280" width="410" x="-130" y="150" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-11" edge="1" parent="1" source="phr_yK9-dTZH4B_XSwU8-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" target="phr_yK9-dTZH4B_XSwU8-6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-3" parent="1" style="shape=process;whiteSpace=wrap;html=1;backgroundOutline=1;" value="&lt;h3&gt;config.json:&lt;/h3&gt;&lt;div align=&quot;left&quot;&gt;Configurable file on disk&lt;/div&gt;&lt;div align=&quot;left&quot;&gt;Contains:&amp;nbsp;&amp;nbsp;&lt;/div&gt;&lt;div align=&quot;left&quot;&gt;* Server Ip&lt;/div&gt;&lt;div align=&quot;left&quot;&gt;* Server port&lt;/div&gt;&lt;div align=&quot;left&quot;&gt;* Array of strings that contain directories to watch&lt;/div&gt;&lt;div align=&quot;left&quot;&gt;* Synchronisation timeout&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="140" width="470" x="-170" y="490" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-12" edge="1" parent="1" source="phr_yK9-dTZH4B_XSwU8-4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" target="phr_yK9-dTZH4B_XSwU8-9">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="410" y="740" />
+              <mxPoint x="410" y="826" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-4" parent="1" style="shape=process;whiteSpace=wrap;html=1;backgroundOutline=1;" value="&lt;h3&gt;database to monitor changes&lt;/h3&gt;&lt;div&gt;* Contains the last time we synchronised with the remote server, and the state&lt;/div&gt;&lt;div&gt;* Ideally we don&#39;t want to copy all the files on disk, then compute a diff, however if the main concern is bandwidth, and not space then maybe?&amp;nbsp;&lt;/div&gt;&lt;div align=&quot;left&quot;&gt;&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="140" width="470" x="-170" y="670" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-8" edge="1" parent="1" source="phr_yK9-dTZH4B_XSwU8-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="phr_yK9-dTZH4B_XSwU8-6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="&lt;h3&gt;OS SPECIFIC: Change monitoring [watcher interface]&lt;/h3&gt;&lt;div&gt;This could either be a scheduled event, or we can use OS specific functions such as:&amp;nbsp;inotify_add_watch and then poll on file change events&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;Apparently on all OS&#39;s these can silently overflow and miss events" vertex="1">
+          <mxGeometry height="165" width="390" x="550" y="237" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-10" edge="1" parent="1" source="phr_yK9-dTZH4B_XSwU8-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" target="phr_yK9-dTZH4B_XSwU8-9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-14" edge="1" parent="1" source="phr_yK9-dTZH4B_XSwU8-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" target="phr_yK9-dTZH4B_XSwU8-3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="&lt;h3&gt;MAIN SCAN LOOP:&lt;/h3&gt;&lt;div&gt;based on the file events OR the complete scan timeout:&lt;/div&gt;&lt;div&gt;service all eventsl file changes, etc&lt;/div&gt;" vertex="1">
+          <mxGeometry height="200" width="552" x="469" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-7" parent="1" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.magnifying_glass_2;" value="" vertex="1">
+          <mxGeometry height="128" width="128" x="422" y="255.5" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-13" edge="1" parent="1" source="phr_yK9-dTZH4B_XSwU8-9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" target="phr_yK9-dTZH4B_XSwU8-4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-19" edge="1" parent="1" source="phr_yK9-dTZH4B_XSwU8-9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="phr_yK9-dTZH4B_XSwU8-18">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-9" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="&lt;h3&gt;Update DB -&amp;gt; chunking changes -&amp;gt; Prepare for synchronisation&lt;/h3&gt;&lt;p&gt;This is where we compare what has changed, ideally since bandwidth is limited, assuming compute is not limited, we compare from our previous knowledge of the server&amp;nbsp;&amp;nbsp;&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;&lt;p&gt;If this level of storage (storing the local db) is too ridiculous, this is where we would have to do an exchange with the server to see what needs updating. Potentially some sort of middleground aswell where we have some state info of the remote stored&lt;/p&gt;&lt;p&gt;If we can&#39;t do a shadow copy, look into Content-defined chunking (CDC -&amp;gt; fastCDC is the algorithm to look into)&lt;/p&gt;&lt;p&gt;rsync rolling checksum algorithm is slightly weaker than CDC but worth discusisng too&lt;/p&gt;&lt;p&gt;&amp;nbsp;&lt;/p&gt;&lt;p&gt;&lt;br&gt;&lt;/p&gt;" vertex="1">
+          <mxGeometry height="280" width="570" x="460" y="756" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-15" edge="1" parent="1" style="endArrow=none;dashed=1;html=1;dashPattern=1 3;strokeWidth=10;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="1630" y="1200" as="sourcePoint" />
+            <mxPoint x="1630" y="90" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-21" edge="1" parent="1" source="phr_yK9-dTZH4B_XSwU8-16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0;exitDx=0;exitDy=142.5;exitPerimeter=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" target="phr_yK9-dTZH4B_XSwU8-18">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-16" parent="1" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;" value="" vertex="1">
+          <mxGeometry height="200" width="160" x="1710" y="460" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-17" parent="1" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;Remote Server&lt;/h1&gt;&lt;p&gt;Collection point&lt;/p&gt;" vertex="1">
+          <mxGeometry height="120" width="180" x="1920" y="490" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-23" edge="1" parent="1" source="phr_yK9-dTZH4B_XSwU8-18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" target="phr_yK9-dTZH4B_XSwU8-22">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-18" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="&lt;h3&gt;TRANSPORT INTERFACE:&lt;/h3&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Raw TCP with custom headers would be the most bandwidth efficient over TCP, however using a protocol like QUIC would reduce total RTT compared to TCP which needs a few frames for setup etc.&lt;/div&gt;" vertex="1">
+          <mxGeometry height="224.5" width="244" x="1210" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-20" edge="1" parent="1" source="phr_yK9-dTZH4B_XSwU8-18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0;entryDx=0;entryDy=57.5;entryPerimeter=0;" target="phr_yK9-dTZH4B_XSwU8-16">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-24" edge="1" parent="1" source="phr_yK9-dTZH4B_XSwU8-22" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="phr_yK9-dTZH4B_XSwU8-4">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1332" y="1280" />
+              <mxPoint x="65" y="1280" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phr_yK9-dTZH4B_XSwU8-22" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="&lt;div&gt;Acknowledgement of update:&amp;nbsp;&lt;/div&gt;&lt;div&gt;Update our known state of the remote when full transfers are confirmed&lt;/div&gt;" vertex="1">
+          <mxGeometry height="165" width="230" x="1217" y="810" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

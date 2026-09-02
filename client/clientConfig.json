@@ -1,0 +1,6 @@
+{
+  "server_ip_address"    : "127.0.0.1",
+  "server_port"          : 9001,
+  "scan_interval_seconds": 900,
+  "directory_paths": "~/test_folder"
+}
